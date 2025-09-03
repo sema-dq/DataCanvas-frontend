@@ -1,3 +1,5 @@
+const apiUrl = 'https://datacanvas-api.onrender.com';
+
 const { createApp, ref, reactive, watch, computed, onMounted, nextTick } = Vue;
 
 const debounce = (func, delay) => {
@@ -32,7 +34,17 @@ const app = createApp({
         const modals = reactive({
             settings: false, grouping: false, calculatedField: false,
             statisticalAnalysis: false,
-            binning: false,
+            binning: false, 
+            fieldSelector: false,
+            database: false,
+        });
+        const fieldSelection = reactive({
+            mode: 'all',
+            availableDimensions: [],
+            availableMeasures: [],
+            selectedFields: [],
+            rawData: [],
+            fileName: ''
         });
         const settings = reactive({
             theme: localStorage.getItem('datacanvas-theme') || 'light',
@@ -40,7 +52,26 @@ const app = createApp({
             activeNumberFormat: localStorage.getItem('datacanvas-format') || 'default',
             showDataLabels: JSON.parse(localStorage.getItem('datacanvas-labels') || 'false'),
             autoUpdateEnabled: JSON.parse(localStorage.getItem('datacanvas-autoupdate') || 'true'),
+            yAxisMode: 'auto',
+            yAxisMin: null,
+            yAxisMax: null,
         });
+        
+        const dbState = reactive({
+            db_type: 'postgresql',
+            host: 'localhost',
+            port: 5432,
+            user: '',
+            password: '',
+            dbname: '',
+            isLoading: false,
+            connectionStatus: '',
+            connectionMessage: '',
+            tables: [],
+            selectedTable: null,
+        });
+
+        const pivotTableData = reactive({ headers: [], rows: [] });
 
         const worksheets = ref([]);
         const activeWorksheetId = ref(null);
@@ -96,7 +127,12 @@ const app = createApp({
             get: () => activeWorksheet.value?.activeChartType,
             set: (val) => { if (activeWorksheet.value) activeWorksheet.value.activeChartType = val; }
         });
-        const chartConfigured = computed(() => activeShelves.value && (activeShelves.value.columns.length > 0 || activeShelves.value.rows.length > 0));
+        const chartConfigured = computed(() => {
+            if (!activeShelves.value) return false;
+            const standardShelves = activeShelves.value.columns.length > 0 || activeShelves.value.rows.length > 0;
+            const pivotShelves = activeShelves.value.pivotRows.length > 0 && activeShelves.value.pivotColumns.length > 0 && activeShelves.value.pivotValues.length > 0;
+            return standardShelves || pivotShelves;
+        });
         const isDarkTheme = computed({
             get: () => settings.theme === 'dark',
             set: (newValue) => { settings.theme = newValue ? 'dark' : 'light'; }
@@ -104,40 +140,70 @@ const app = createApp({
         const canUndo = computed(() => historyIndex.value > 0);
         const canRedo = computed(() => historyIndex.value < history.length - 1);
         const isAnalyticsPanelVisible = computed(() => activeWorksheet.value?.activeChartType === 'line' && activeShelves.value?.columns.some(f => f.isDate));
+        
         const chartSuggestions = computed(() => {
-            if (!activeShelves.value) return [];
-            const suggestions = [];
+            if (!activeShelves.value) return { standard: [], pivot: false };
+
+            const standard = [];
+            let pivot = false;
+
             const allFields = [...activeShelves.value.columns, ...activeShelves.value.rows, ...activeShelves.value.color];
             const dims = allFields.filter(f => f.type === 'dimension').length;
             const measuresCount = allFields.filter(f => f.type === 'measure').length;
+            const dateFieldsCount = allFields.filter(f => isDateField(f.name)).length;
+
+            // Suggestions for 1+ Dimensions and 1+ Measures
             if (dims >= 1 && measuresCount >= 1) {
-                suggestions.push({ name: 'Table', type: 'table', icon: '📇' }, { name: 'Bar Chart', type: 'bar', icon: '📊' }, { name: 'Line Chart', type: 'line', icon: '📈' }, { name: 'Area Chart', type: 'area', icon: '📉' }, { name: 'Treemap', type: 'treemap', icon: '🟫' }, { name: 'Box Plot', type: 'boxplot', icon: ' 箱' });
+                standard.push(
+                    { name: 'Table', type: 'table', icon: '📇' },
+                    { name: 'Bar Chart', type: 'bar', icon: '📊' },
+                    { name: 'Line Chart', type: 'line', icon: '📈' },
+                    { name: 'Area Chart', type: 'area', icon: '📉' },
+                    { name: 'Treemap', type: 'treemap', icon: '🟫' },
+                    { name: 'Pie Chart', type: 'pie', icon: '🥧' },
+                    { name: 'Box Plot', type: 'boxplot', icon: '🗃️' } // Added Box Plot
+                );
             }
+            
+            // Suggestion for Word Cloud (Dimensions only)
+            if (dims >= 1 && measuresCount === 0) {
+                standard.push({ name: 'Word Cloud', type: 'wordCloud', icon: '☁️' });
+            }
+
+            // Suggestion for Maps
             if (allFields.find(f => f.type === 'dimension' && isGeoField(f.name)) && measuresCount >= 1) {
-                suggestions.push({ name: 'Map Chart', type: 'map', icon: '🗺️' });
+                standard.push({ name: 'Map Chart', type: 'map', icon: '🗺️' });
             }
+            
+            // Suggestions for 2+ Measures
             if (measuresCount >= 2) {
                 if (activeShelves.value.rows.filter(f => f.type === 'measure').length === 2 && dims >= 1) {
-                    suggestions.push({ name: 'Combo Chart', type: 'combo', icon: '⬱' });
+                    standard.push({ name: 'Combo Chart', type: 'combo', icon: '⬱' });
                 }
-                suggestions.push({ name: 'Scatter Plot', type: 'scatter', icon: '✨' });
+                standard.push({ name: 'Scatter Plot', type: 'scatter', icon: '✨' });
             }
-                    if (dims >= 2 && measuresCount >= 1) {
-                suggestions.push({ name: 'Sankey Diagram', type: 'sankey', icon: '🌊' });
-            }
-            if (dims >= 1 && allFields.filter(f => isDateField(f.name)).length >= 2) {
-                suggestions.push({ name: 'Gantt Chart', type: 'gantt', icon: '📊' });
-            }
-            if (dims >= 1 && measuresCount === 0) {
-                suggestions.push({ name: 'Word Cloud', type: 'wordCloud', icon: '☁️' });
-            }
+            
+            // Suggestions for 2+ Dimensions
             if (dims >= 2 && measuresCount >= 1) {
-                suggestions.push({ name: 'Heatmap', type: 'heatmap', icon: '🔥' });
+                standard.push(
+                    { name: 'Heatmap', type: 'heatmap', icon: '🔥' },
+                    { name: 'Sankey', type: 'sankey', icon: '⮂' } // Added Sankey
+                );
             }
-            if (dims >= 1 && measuresCount >= 1 && !suggestions.some(s => s.type === 'pie')) {
-                suggestions.push({ name: 'Pie Chart', type: 'pie', icon: '🥧' });
+
+            // Suggestion for Gantt Chart (Requires 2 Date fields)
+            if (dims >= 1 && dateFieldsCount >= 2) {
+                standard.push({ name: 'Gantt', type: 'gantt', icon: '⏳' });
             }
-            return suggestions;
+
+            // Enable Pivot Table option
+            if (dims >= 1 || measuresCount >= 1) {
+                pivot = true;
+            }
+
+            // Ensure no duplicate suggestions and return in the expected format
+            const uniqueSuggestions = Array.from(new Map(standard.map(item => [item.type, item])).values());
+            return { standard: uniqueSuggestions, pivot };
         });
         
         const canRunAnalysis = computed(() => {
@@ -152,7 +218,6 @@ const app = createApp({
                     return analysisState.clustering.k > 1 && analysisState.clustering.fields.length >= 2;
                 default:
                     return false;
-                    
             }
         });
 
@@ -207,6 +272,8 @@ const app = createApp({
             if (!activeWorksheet.value || !chartConfigured.value) {
                 if (mainChart) mainChart.clear();
                 uiState.tableData = { headers: [], rows: [] };
+                pivotTableData.headers = [];
+                pivotTableData.rows = [];
                 return;
             }
             setLoading(true);
@@ -214,11 +281,18 @@ const app = createApp({
             try {
                 const { chartData: processedData, payload } = await processDataWithWorker(activeWorksheet.value);
                 activeWorksheet.value.chartData = processedData;
-                if (activeWorksheet.value.activeChartType === 'table') {
+                
+                if (activeWorksheet.value.activeChartType === 'pivot') {
+                    pivotTableData.headers = processedData.headers || [];
+                    pivotTableData.rows = processedData.rows || [];
+                    if (mainChart) mainChart.clear();
+                } else if (activeWorksheet.value.activeChartType === 'table') {
                     if (mainChart) mainChart.clear();
                     uiState.tableData = processedData.length > 0 ? { headers: Object.keys(processedData[0]), rows: processedData } : { headers: [], rows: [] };
                 } else {
                     uiState.tableData = { headers: [], rows: [] };
+                    pivotTableData.headers = [];
+                    pivotTableData.rows = [];
                     if (!chartContainer.value) return;
                     const option = generateChartOption(processedData, payload);
                     if (mainChart) mainChart.dispose();
@@ -259,15 +333,20 @@ const app = createApp({
             if (!activeWorksheet.value) return;
             const allShelfFields = [...activeShelves.value.columns, ...activeShelves.value.rows];
             allShelfFields.forEach(field => { if (isDateField(field.name) && !field.isDate) { field.isDate = true; field.drillLevel = 'year'; } });
-            activeWorksheet.value.activeChartType = (() => {
-                const measureCount = allShelfFields.filter(f => f.type === 'measure').length;
-                if (measureCount >= 2) return 'scatter';
-                if (allShelfFields.some(f => f.isDate) && measureCount >= 1) return 'line';
-                if (allShelfFields.filter(f => f.type === 'dimension').length >= 1 && measureCount >= 1) return 'bar';
-                return activeWorksheet.value.activeChartType;
-            })();
+            
+            if (activeWorksheet.value.activeChartType !== 'pivot') {
+                activeWorksheet.value.activeChartType = (() => {
+                    const measureCount = allShelfFields.filter(f => f.type === 'measure').length;
+                    if (measureCount >= 2) return 'scatter';
+                    if (allShelfFields.some(f => f.isDate) && measureCount >= 1) return 'line';
+                    if (allShelfFields.filter(f => f.type === 'dimension').length >= 1 && measureCount >= 1) return 'bar';
+                    return activeWorksheet.value.activeChartType;
+                })();
+            }
             requestVisualizationUpdate();
         };
+
+        // script.js
 
         const generateChartOption = (chartData, payload) => {
             const chartType = payload.chart_type;
@@ -286,12 +365,12 @@ const app = createApp({
             return (chartGenerators[chartType] || (() => ({})))(chartData, payload);
         };
         const _createTooltipFormatter = (params) => `${params[0].axisValueLabel}<br/>` + params.map(p => `${p.marker} ${p.seriesName}: ${formatNumber(p.value)}`).join('<br/>');
+        
         const _getBarLineAreaOption = (chartData, payload) => {
             const { chart_type, x_axis, y_axes, color, analytics } = payload;
             const categories = [...new Set(chartData.map(d => d[x_axis]))];
             const legendData = color ? [...new Set(chartData.map(d => d[color]))] : [];
         
-            // Base series for the historical data
             const series = legendData.length > 0
                 ? legendData.map(c => ({ 
                     name: c, 
@@ -321,15 +400,13 @@ const app = createApp({
                 grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true } 
             };
         
-            // New: Add forecast series with confidence interval
-            if (chart_type === 'line' && analytics?.showTrendLine && analytics?.forecastData && analytics?.forecastConfidence) {
+            if (chart_type === 'line' && analytics?.showTrendLine && analytics?.forecastData) {
                 const forecastCategories = [...categories];
                 for(let i = 0; i < analytics.forecastData.length; i++) {
                     forecastCategories.push(`Forecast ${i + 1}`);
                 }
                 option.xAxis.data = forecastCategories;
         
-                // Series for the forecast line
                 const forecastLineData = Array(categories.length).fill(null).concat(analytics.forecastData.map(d => d.prediction));
                 option.series.push({
                     name: 'Forecast',
@@ -340,28 +417,20 @@ const app = createApp({
                     data: forecastLineData
                 });
                 
-                // Series for the confidence interval (shaded area)
-                const confidenceIntervalData = Array(categories.length).fill([null, null]).concat(
-                    analytics.forecastConfidence.map(ci => [ci.lower, ci.upper])
-                );
-                option.series.push({
-                    name: 'Confidence Interval',
-                    type: 'line',
-                    smooth: true,
-                    symbol: 'none',
-                    lineStyle: { opacity: 0 },
-                    areaStyle: {
-                        color: 'rgba(59, 130, 246, 0.2)' // A light blue shade
-                    },
-                    data: confidenceIntervalData,
-                    markLine: {
-                        data: [
-                            { yAxis: 'min', name: 'Min', label: { show: false } },
-                            { yAxis: 'max', name: 'Max', label: { show: false } }
-                        ]
-                    }
-                });
-                
+                if (analytics.forecastConfidence && analytics.forecastConfidence.length > 0) {
+                    const confidenceIntervalData = Array(categories.length).fill([null, null]).concat(
+                        analytics.forecastConfidence.map(ci => [ci.lower, ci.upper])
+                    );
+                    option.series.push({
+                        name: 'Confidence Interval',
+                        type: 'line',
+                        smooth: true,
+                        symbol: 'none',
+                        lineStyle: { opacity: 0 },
+                        areaStyle: { color: 'rgba(59, 130, 246, 0.2)' },
+                        data: confidenceIntervalData,
+                    });
+                }
                 option.legend.data.push('Forecast');
             } else if (chart_type === 'line' && analytics?.showTrendLine && chartData.length > 1 && !color) {
                 const regressionData = chartData.map((d, i) => [i, d[y_axes[0]]]);
@@ -369,6 +438,11 @@ const app = createApp({
                 const trendLineData = regressionData.map(d => trendLineFunc(d[0]));
                 option.series.push({ name: 'Trend Line', type: 'line', smooth: true, symbol: 'none', lineStyle: { type: 'dashed', width: 2 }, data: trendLineData });
                 option.legend.data.push('Trend Line');
+            }
+
+            if (settings.yAxisMode === 'fixed' && settings.yAxisMin !== null && settings.yAxisMax !== null) {
+                option.yAxis.min = settings.yAxisMin;
+                option.yAxis.max = settings.yAxisMax;
             }
             
             return option;
@@ -388,15 +462,46 @@ const app = createApp({
             const seriesData = chartData.map(d => [xData.indexOf(d[heatmap_x]), yData.indexOf(d[heatmap_y]), d[heatmap_value]]).filter(p => p[0] >= 0 && p[1] >= 0);
             return { tooltip: { position: 'top', formatter: p => formatNumber(p.value[2]) }, grid: { height: '80%', top: '10%' }, xAxis: { type: 'category', data: xData, splitArea: { show: true } }, yAxis: { type: 'category', data: yData, splitArea: { show: true } }, visualMap: { min: Math.min(...seriesData.map(d => d[2])), max: Math.max(...seriesData.map(d => d[2])), inRange: { color: ['#e0f3ff', '#69c0ff', '#003a8c'] }, calculable: true, orient: 'horizontal', left: 'center', bottom: '0%', formatter: formatNumber }, series: [{ name: 'Heatmap Data', type: 'heatmap', data: seriesData, label: { show: true, formatter: p => formatNumber(p.value[2]) }, emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } } }] };
         };
-        const _getScatterOption = (chartData, payload) => ({ color: palettes[settings.activePalette], tooltip: { trigger: 'item', formatter: p => `${payload.x_axis}: ${formatNumber(p.value[0])}<br/>${payload.y_axes[0]}: ${formatNumber(p.value[1])}` }, xAxis: { type: 'value', name: payload.x_axis, axisLabel: { formatter: formatNumber } }, yAxis: { type: 'value', name: payload.y_axes[0], axisLabel: { formatter: formatNumber } }, series: [{ symbolSize: 10, type: 'scatter', data: chartData.map(d => [d[payload.x_axis], d[payload.y_axes[0]]]) }], grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true } });
+        const _getScatterOption = (chartData, payload) => {
+            const option = {
+                color: palettes[settings.activePalette],
+                tooltip: {
+                    trigger: 'item',
+                    formatter: p => `${payload.x_axis}: ${formatNumber(p.value[0])}<br/>${payload.y_axes[0]}: ${formatNumber(p.value[1])}`
+                },
+                xAxis: {
+                    type: 'value',
+                    name: payload.x_axis,
+                    axisLabel: { formatter: formatNumber }
+                },
+                yAxis: {
+                    type: 'value',
+                    name: payload.y_axes[0],
+                    axisLabel: { formatter: formatNumber }
+                },
+                series: [{
+                    symbolSize: 10,
+                    type: 'scatter',
+                    data: chartData.map(d => [d[payload.x_axis], d[payload.y_axes[0]]])
+                }],
+                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true }
+            };
+            if (settings.yAxisMode === 'fixed' && settings.yAxisMin !== null && settings.yAxisMax !== null) {
+                option.yAxis.min = settings.yAxisMin;
+                option.yAxis.max = settings.yAxisMax;
+            }
+            return option;
+        };
+
         const _getMapOption = (chartData, payload) => {
             const { geo_field, value_field } = payload;
             if (!geo_field || !value_field) return {};
             return { tooltip: { trigger: 'item', formatter: p => p.data ? `${p.name}<br/>${value_field}: ${formatNumber(p.value)}` : p.name }, visualMap: { left: 'left', min: Math.min(...chartData.map(d => d[value_field])), max: Math.max(...chartData.map(d => d[value_field])), inRange: { color: ['#e0f3ff', '#69c0ff', '#003a8c'] }, calculable: true, orient: 'horizontal', left: 'center', bottom: '0%', formatter: formatNumber }, series: [{ name: 'Map Data', type: 'map', map: 'world', roam: true, emphasis: { label: { show: true }, itemStyle: { areaColor: '#ee6666' } }, data: chartData.map(d => ({ name: getMapCountryName(d[geo_field]), value: d[value_field] })) }] };
         };
+        
         const _getBoxPlotOption = (chartData, payload) => {
             const { categories, boxplotData } = chartData;
-            return {
+            const option = {
                 color: palettes[settings.activePalette],
                 tooltip: {
                     trigger: 'item',
@@ -427,6 +532,11 @@ const app = createApp({
                     }
                 ]
             };
+            if (settings.yAxisMode === 'fixed' && settings.yAxisMin !== null && settings.yAxisMax !== null) {
+                option.yAxis.min = settings.yAxisMin;
+                option.yAxis.max = settings.yAxisMax;
+            }
+            return option;
         };
 
         const _getSankeyOption = (chartData, payload) => {
@@ -609,49 +719,45 @@ const app = createApp({
             const selectedFile = event.target.files[0];
             if (!selectedFile) return;
             setLoading(true);
-            dataState.file = selectedFile;
-            if (selectedFile.name.endsWith('.datacanvas')) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
+        
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                if (selectedFile.name.endsWith('.datacanvas')) {
                     try {
                         const workspace = JSON.parse(e.target.result);
-                        settings.activePalette = workspace.activePalette || 'default';
-                        settings.activeNumberFormat = workspace.activeNumberFormat || 'default';
-                        settings.autoUpdateEnabled = workspace.autoUpdateEnabled !== false;
                         loadStateFromSnapshot(workspace);
                     } catch (err) {
-                        alert('Failed to load workspace file. It may be corrupted.');
-                        console.error("Error loading workspace:", err);
+                        alert('Failed to load workspace file.');
                     } finally {
                         setLoading(false);
                     }
-                };
-                reader.readAsText(selectedFile);
-            } else {
-                Papa.parse(selectedFile, {
-                    header: true,
-                    dynamicTyping: true,
-                    skipEmptyLines: true,
-                    complete: (results) => {
-                        loadNewData(results, selectedFile.name);
-                        setLoading(false);
-                    },
-                    error: (err) => {
-                        alert(`Error parsing CSV file: ${err.message}`);
-                        setLoading(false);
-                    }
-                });
-            }
+                } else {
+                    Papa.parse(e.target.result, {
+                        header: true,
+                        dynamicTyping: true,
+                        skipEmptyLines: true,
+                        complete: (results) => {
+                            promptForFieldSelection(results, selectedFile.name);
+                            setLoading(false);
+                        },
+                        error: (err) => {
+                            alert(`Error parsing CSV file: ${err.message}`);
+                            setLoading(false);
+                        }
+                    });
+                }
+            };
+            reader.readAsText(selectedFile);
             event.target.value = '';
         };
-        
+
         const loadDataFromUrl = async () => {
             const url = dataState.dataUrl.trim();
             if (!url) return alert('Please enter a URL.');
             setLoading(true);
             try {
                 const response = await fetch(url);
-                if (!response.ok) throw new Error(`Network response was not ok (${response.status})`);
+                if (!response.ok) throw new Error(`Network response was not ok`);
                 const csvText = await response.text();
                 Papa.parse(csvText, {
                     header: true,
@@ -659,18 +765,72 @@ const app = createApp({
                     skipEmptyLines: true,
                     complete: (results) => {
                         const fileName = url.split('/').pop();
-                        loadNewData(results, fileName);
+                        promptForFieldSelection(results, fileName);
                         dataState.dataUrl = '';
                     },
-                    error: (err) => {
-                        alert(`Error parsing CSV from URL: ${err.message}`);
-                    }
+                    error: (err) => alert(`Error parsing CSV from URL: ${err.message}`)
                 });
             } catch (error) {
                 alert(`Failed to fetch or process data from URL: ${error.message}`);
             } finally {
                 setLoading(false);
             }
+        };
+
+        const promptForFieldSelection = (parsedResults, fileName) => {
+            if (!parsedResults.data || parsedResults.data.length === 0) {
+                return alert('The selected file is empty or could not be parsed.');
+            }
+            const headers = Object.keys(parsedResults.data[0] || {});
+            const sample = parsedResults.data[0];
+        
+            fieldSelection.availableDimensions = headers.filter(h => typeof sample[h] !== 'number');
+            fieldSelection.availableMeasures = headers.filter(h => typeof sample[h] === 'number');
+            
+            fieldSelection.selectedFields = [...headers];
+            
+            fieldSelection.rawData = parsedResults.data;
+            fieldSelection.fileName = fileName;
+            fieldSelection.mode = 'all';
+            modals.fieldSelector = true;
+        };
+
+        const finalizeDataLoad = () => {
+            resetApplication(true);
+            let recordsToLoad = fieldSelection.rawData;
+            let finalDimensions = fieldSelection.availableDimensions;
+            let finalMeasures = fieldSelection.availableMeasures;
+        
+            if (fieldSelection.mode === 'select') {
+                const selected = new Set(fieldSelection.selectedFields);
+                recordsToLoad = fieldSelection.rawData.map(record => {
+                    const newRecord = {};
+                    for (const field of selected) {
+                        if (record.hasOwnProperty(field)) {
+                            newRecord[field] = record[field];
+                        }
+                    }
+                    return newRecord;
+                });
+                finalDimensions = fieldSelection.availableDimensions.filter(d => selected.has(d));
+                finalMeasures = fieldSelection.availableMeasures.filter(m => selected.has(m));
+            }
+        
+            dataState.records = recordsToLoad;
+            dataState.file = { name: fieldSelection.fileName };
+            dataState.dimensions = finalDimensions.map(name => ({ name, type: 'dimension' }));
+            dataState.measures = finalMeasures.map(name => ({ name, type: 'measure' }));
+        
+            history.splice(0, history.length);
+            saveStateSnapshot();
+            modals.fieldSelector = false;
+        };
+
+        const cancelDataLoad = () => {
+            modals.fieldSelector = false;
+            fieldSelection.rawData = [];
+            fieldSelection.fileName = '';
+            fieldSelection.selectedFields = [];
         };
         
         const saveWorkspace = () => {
@@ -717,7 +877,7 @@ const app = createApp({
                 dashboardLayout.value = [];
                 dashboardCharts.clear();
                 Object.keys(dashboardFilters).forEach(key => delete dashboardFilters[key]);
-                const newSheet = { id: 1, name: 'Sheet 1', shelves: reactive({ columns: [], rows: [], color: [], filters: [] }), activeChartType: 'bar', analytics: reactive({ showTrendLine: false, forecastPeriods: 3, model: 'linear' }), chartData: [] };
+                const newSheet = { id: 1, name: 'Sheet 1', shelves: reactive({ columns: [], rows: [], color: [], filters: [], pivotRows: [], pivotColumns: [], pivotValues: [] }), activeChartType: 'bar', analytics: reactive({ showTrendLine: false, forecastPeriods: 3, model: 'linear' }), chartData: [] };
                 worksheets.value = [newSheet];
                 activeWorksheetId.value = 1;
                 worksheetCounter = 1;
@@ -737,7 +897,7 @@ const app = createApp({
             const newSheet = {
                 id: worksheetCounter,
                 name: `Sheet ${worksheetCounter}`,
-                shelves: reactive({ columns: [], rows: [], color: [], filters: [] }),
+                shelves: reactive({ columns: [], rows: [], color: [], filters: [], pivotRows: [], pivotColumns: [], pivotValues: [] }),
                 activeChartType: 'bar',
                 analytics: reactive({ showTrendLine: false, forecastPeriods: 3, model: 'linear' }),
                 chartData: []
@@ -804,7 +964,7 @@ const app = createApp({
         
         const removeFromShelf = (shelf, item) => {
             if (!activeWorksheet.value) return;
-            const shelfArray = shelf === 'filters' ? activeWorksheet.value.shelves.filters : activeWorksheet.value.shelves[shelf];
+            const shelfArray = activeWorksheet.value.shelves[shelf];
             const findIndexFn = shelf === 'filters' ? f => f.field === item.field : i => i.name === item.name;
             const index = shelfArray.findIndex(findIndexFn);
             if (index > -1) {
@@ -818,7 +978,7 @@ const app = createApp({
         
         const resetView = () => {
             if (activeWorksheet.value) {
-                Object.assign(activeWorksheet.value.shelves, { columns: [], rows: [], color: [], filters: [] });
+                Object.assign(activeWorksheet.value.shelves, { columns: [], rows: [], color: [], filters: [], pivotRows: [], pivotColumns: [], pivotValues: [] });
             }
             activeFilter.value = null;
             requestVisualizationUpdate();
@@ -1102,66 +1262,84 @@ const app = createApp({
             analysisState.result = null;
             analysisState.error = '';
             setLoading(true);
-
+        
             try {
-                const payload = {
-                    testType: analysisState.testType,
+                let endpoint = '';
+                let payload = {
                     records: JSON.parse(JSON.stringify(dataState.records)),
-                    params: {}
                 };
-
+        
                 switch (analysisState.testType) {
                     case 'correlation':
-                        if (!analysisState.measure1 || !analysisState.measure2) throw new Error('Please select two measures.');
-                        payload.params = { measure1: analysisState.measure1, measure2: analysisState.measure2 };
+                        endpoint = '/analysis/correlation';
+                        payload.measure1 = analysisState.measure1;
+                        payload.measure2 = analysisState.measure2;
                         break;
                     case 'ttest':
-                        if (!analysisState.ttest.measure || !analysisState.ttest.dimension) throw new Error('Please select a measure and a dimension.');
-                        payload.params = { measure: analysisState.ttest.measure, dimension: analysisState.ttest.dimension };
+                        endpoint = '/analysis/t-test';
+                        payload.measure = analysisState.ttest.measure;
+                        payload.dimension = analysisState.ttest.dimension;
                         break;
                     case 'zscore':
-                        if (!analysisState.zscore.measure) throw new Error('Please select a measure.');
-                        payload.params = { measure: analysisState.zscore.measure };
+                        endpoint = '/ml/z-score-outliers';
+                        payload.measure = analysisState.zscore.measure;
                         break;
-
                     case 'clustering':
-                        if (analysisState.clustering.fields.length < 2) throw new Error('Please select at least two measures to cluster.');
-                        payload.params = { k: analysisState.clustering.k, fields: analysisState.clustering.fields};
+                        endpoint = '/ml/kmeans-clustering';
+                        payload.fields = analysisState.clustering.fields;
+                        payload.n_clusters = analysisState.clustering.k;
                         break;
                     default:
                         throw new Error('Invalid test type selected.');
                 }
-                
-                const workerResult = await new Promise((resolve, reject) => {
-                    const tempWorker = new Worker('worker.js');
-                    tempWorker.onmessage = (event) => {
-                        tempWorker.terminate();
-                        resolve(event.data);
-                    };
-                    tempWorker.onerror = (error) => {
-                        tempWorker.terminate();
-                        reject(error);
-                    };
-                    tempWorker.postMessage({ type: 'runAnalysis', payload });
+        
+                const response = await fetch(`${apiUrl}${endpoint}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
                 });
-
-                if (workerResult.error) {
-                    analysisState.error = workerResult.error;
-                } else {
-                    if (analysisState.testType === 'clustering') {
-                        // For clustering, we update the main dataset and close the modal
-                        dataState.records = workerResult.records;
-                        if (!dataState.dimensions.some(d => d.name === 'Cluster')) {
-                            dataState.dimensions.push({ name: 'Cluster', type: 'dimension' });
-                        }
-                        modals.statisticalAnalysis = false;
-                        alert('Clustering complete! A new "Cluster" dimension has been added.');
-                        requestVisualizationUpdate(); // Redraw the chart
-                    } else {
-                        // For other analyses, we just show the results in the modal
-                        analysisState.result = workerResult.result;
-                    }
+        
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'The API request failed.');
                 }
+        
+                const apiResult = await response.json();
+        
+                if (analysisState.testType === 'clustering') {
+                    dataState.records = apiResult.records;
+                    if (!dataState.dimensions.some(d => d.name === 'Cluster')) {
+                        dataState.dimensions.push({ name: 'Cluster', type: 'dimension' });
+                    }
+                    modals.statisticalAnalysis = false;
+                    alert('Clustering complete! A new "Cluster" dimension has been added.');
+                    requestVisualizationUpdate();
+                } else {
+                    const result = apiResult.result;
+                    let headers = [];
+                    let rows = [];
+        
+                    if (result.correlation_coefficient !== undefined) {
+                        headers = ['Measures', 'Correlation Coefficient'];
+                        rows = [
+                            [`${payload.measure1} & ${payload.measure2}`, result.correlation_coefficient.toFixed(4)]
+                        ];
+                    } else if (result.t_statistic !== undefined) {
+                        headers = ['T-Statistic', 'P-Value'];
+                        rows = [
+                            [result.t_statistic.toFixed(4), result.p_value.toFixed(4)]
+                        ];
+                    } else if (result.outliers) {
+                        headers = result.outliers.length > 0 ? Object.keys(result.outliers[0]) : ['Message'];
+                        rows = result.outliers.length > 0 ? result.outliers.map(o => Object.values(o)) : [
+                            [result.message || 'No outliers found']
+                        ];
+                    }
+                    analysisState.result = { headers, rows };
+                }
+        
             } catch (e) {
                 console.error("Analysis failed:", e);
                 analysisState.error = e.message;
@@ -1170,14 +1348,14 @@ const app = createApp({
             }
         };
 
-        const openBinningModal = () => { // <-- ADDED: New function to open the binning modal
+        const openBinningModal = () => {
             binningState.measure = dataState.measures[0]?.name || '';
             binningState.binSize = 100;
             binningState.binName = `${binningState.measure || 'Field'} Bins`;
             modals.binning = true;
         };
 
-        const submitBin = async () => { // <-- ADDED: New function to submit the binning request
+        const submitBin = async () => {
             if (!binningState.binName.trim() || !binningState.measure || !binningState.binSize) {
                 return alert('Please fill in all binning fields.');
             }
@@ -1212,9 +1390,7 @@ const app = createApp({
                     throw new Error(workerResult.error);
                 }
                 
-                // Add the new binned field to the dimensions
                 dataState.dimensions.push({ name: binningState.binName, type: 'dimension' });
-                // Replace the old records with the new binned records
                 dataState.records = workerResult.records;
 
                 modals.binning = false;
@@ -1228,9 +1404,78 @@ const app = createApp({
             }
         };
 
+        const testDBConnection = async () => {
+            dbState.isLoading = true;
+            dbState.connectionStatus = '';
+            dbState.connectionMessage = '';
+            dbState.tables = [];
+            dbState.selectedTable = null;
+        
+            try {
+                const response = await fetch(`${apiUrl}/data/connect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dbState)
+                });
+            
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+            
+                dbState.connectionStatus = 'success';
+                dbState.connectionMessage = 'Connection successful! Tables loaded.';
+                dbState.tables = result.tables;
+            
+            } catch (e) {
+                dbState.connectionStatus = 'error';
+                dbState.connectionMessage = `Error: ${e.message}`;
+            } finally {
+                dbState.isLoading = false;
+            }
+        };
+
+        const loadTableData = async () => {
+            if (!dbState.selectedTable) return;
+            dbState.isLoading = true;
+        
+            try {
+                const payload = { ...dbState, table_name: dbState.selectedTable };
+                const response = await fetch(`${apiUrl}/data/load-table`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail);
+
+                const fakeParsedResults = { data: result.records };
+                loadNewData(fakeParsedResults, dbState.selectedTable);
+                
+                modals.database = false;
+
+            } catch (e) {
+                dbState.connectionStatus = 'error';
+                dbState.connectionMessage = `Error loading table: ${e.message}`;
+            } finally {
+                dbState.isLoading = false;
+            }
+        };
+
 
         watch(() => settings.theme, (newTheme) => { localStorage.setItem('datacanvas-theme', newTheme); document.documentElement.classList.toggle('dark', newTheme === 'dark'); if (uiState.viewMode === 'dashboard') renderDashboardCharts(); else updateVisualization(); }, { immediate: true });
-        watch([() => settings.activePalette, () => settings.activeNumberFormat, () => settings.showDataLabels, () => settings.autoUpdateEnabled], () => { localStorage.setItem('datacanvas-palette', settings.activePalette); localStorage.setItem('datacanvas-format', settings.activeNumberFormat); localStorage.setItem('datacanvas-labels', settings.showDataLabels); localStorage.setItem('datacanvas-autoupdate', settings.autoUpdateEnabled); if (settings.autoUpdateEnabled && uiState.isDirty) applyManualUpdate(); else if (uiState.viewMode === 'worksheet') updateVisualization(); else renderDashboardCharts(); });
+        watch([() => settings.activePalette, () => settings.activeNumberFormat, () => settings.showDataLabels, () => settings.autoUpdateEnabled, () => settings.yAxisMode, () => settings.yAxisMin, () => settings.yAxisMax], () => { 
+            localStorage.setItem('datacanvas-palette', settings.activePalette); 
+            localStorage.setItem('datacanvas-format', settings.activeNumberFormat); 
+            localStorage.setItem('datacanvas-labels', settings.showDataLabels); 
+            localStorage.setItem('datacanvas-autoupdate', settings.autoUpdateEnabled); 
+            if (settings.autoUpdateEnabled && uiState.isDirty) {
+                applyManualUpdate(); 
+            } else if (uiState.viewMode === 'worksheet') {
+                updateVisualization();
+            } else {
+                renderDashboardCharts();
+            } 
+        }, { deep: true });
         watch(
             () => ({
                 worksheets: worksheets.value,
@@ -1271,12 +1516,12 @@ const app = createApp({
             startEdit, saveEdit, cancelEdit, addToDashboard, removeFromDashboard, showContextMenu, convertFieldType, openGroupModal, submitGroup, openSettings,
             resetView, toggleDropdown, openCalcFieldModal, closeCalcFieldModal, submitCalcField, handleShelfUpdate, getWorksheetById, gridItemStyle, dragStart, resizeStart, getSortClass, toggleSort,
             drillDate, handleDashboardChartClick, applyManualUpdate, undo, redo, getTableCellStyle, formatNumber, setChartType, editFilter, removeFromShelf,
-            openAnalysisModal, handleAddFilter, runAnalysis,
+            openAnalysisModal, handleAddFilter, runAnalysis, fieldSelection,
+            finalizeDataLoad,
+            cancelDataLoad, pivotTableData, dbState, testDBConnection, loadTableData,
         };
     }
-})
+});
 
 app.component('draggable', vuedraggable);
 app.mount('#app');
-
-chartSuggestions
