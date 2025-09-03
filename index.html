@@ -57,6 +57,9 @@
             <div class="panel-actions">
                 <label for="file-input" class="file-upload-label">{{ dataState.file ? dataState.file.name : 'Load Data' }}</label>
                 <input type="file" id="file-input" @change="handleFileUpload" accept=".csv,.datacanvas" class="visually-hidden">
+                
+                <button class="action-button secondary" @click="modals.database = true">Connect to Database</button>
+            
                 <button class="action-button" @click="saveWorkspace" v-if="dataState.records.length">Save Workspace</button>
                 <button class="action-button secondary" @click="modals.calculatedField = true" v-if="dataState.records.length">Create Calculated Field</button>
 
@@ -96,7 +99,44 @@
             
             <div class="shelves-and-filters">
                 <button class="action-button add-to-dash-button" @click="addToDashboard">Add to Dashboard</button>
-                <div class="shelves-panel">
+                
+                <div v-if="activeChartType === 'pivot'" class="shelves-panel pivot-shelves">
+                    <div class="shelf-group">
+                        <label>Rows</label>
+                        <draggable v-model="activeShelves.pivotRows" class="shelf" item-key="name" group="fields" @change="handleShelfUpdate">
+                            <template #item="{element}">
+                                <div :class="['field-pill', element.type]">
+                                    {{ element.name }}
+                                    <button @click="removeFromShelf('pivotRows', element)" class="remove-pill">×</button>
+                                </div>
+                            </template>
+                        </draggable>
+                    </div>
+                    <div class="shelf-group">
+                        <label>Columns</label>
+                        <draggable v-model="activeShelves.pivotColumns" class="shelf" item-key="name" group="fields" @change="handleShelfUpdate">
+                            <template #item="{element}">
+                                <div :class="['field-pill', element.type]">
+                                    {{ element.name }}
+                                    <button @click="removeFromShelf('pivotColumns', element)" class="remove-pill">×</button>
+                                </div>
+                            </template>
+                        </draggable>
+                    </div>
+                    <div class="shelf-group">
+                        <label>Values</label>
+                        <draggable v-model="activeShelves.pivotValues" class="shelf" item-key="name" group="fields" @change="handleShelfUpdate">
+                            <template #item="{element}">
+                                <div :class="['field-pill', element.type]">
+                                    {{ element.name }} ({{ element.aggregation || 'SUM' }})
+                                    <button @click="removeFromShelf('pivotValues', element)" class="remove-pill">×</button>
+                                </div>
+                            </template>
+                        </draggable>
+                    </div>
+                </div>
+
+                <div class="shelves-panel" v-if="activeChartType !== 'pivot'">
                     <div class="shelf-group">
                         <label>Columns (X-Axis)</label>
                         <draggable v-model="activeShelves.columns" class="shelf" item-key="name" group="fields" @change="handleShelfUpdate">
@@ -163,7 +203,7 @@
                 </div>
             </div>
             <div class="canvas-panel">
-                <div id="chart-container" ref="chartContainer" class="chart-container" v-show="activeChartType !== 'table'"></div>
+                <div id="chart-container" ref="chartContainer" class="chart-container" v-show="activeChartType !== 'table' && activeChartType !== 'pivot'"></div>
                 <div class="table-container" v-if="activeChartType === 'table'">
                     <table>
                         <thead>
@@ -180,9 +220,22 @@
                         </tbody>
                     </table>
                 </div>
+                <div class="table-container" v-if="activeChartType === 'pivot'">
+                    <table class="pivot-table">
+                        <thead>
+                            <tr>
+                                <th v-for="header in pivotTableData.headers">{{ header }}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="row in pivotTableData.rows">
+                                <td v-for="cell in row">{{ typeof cell === 'number' ? formatNumber(cell) : cell }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </main>
-
         <div class="dashboard-grid" v-else-if="uiState.viewMode === 'dashboard'" ref="dashboardGridRef">
             <div 
                 v-for="item in dashboardLayout"
@@ -270,16 +323,20 @@
         <div v-if="chartConfigured && uiState.viewMode === 'worksheet'" class="show-me-panel card">
             <h3>Chart Types</h3>
             <div class="suggestions-list">
-                <div v-for="suggestion in chartSuggestions" :key="suggestion.type" class="suggestion-button" @click="setChartType(suggestion.type)" :class="{ 'active-suggestion': suggestion.type === activeChartType }">
+                <div v-for="suggestion in chartSuggestions.standard" :key="suggestion.type" class="suggestion-button" @click="setChartType(suggestion.type)" :class="{ 'active-suggestion': suggestion.type === activeChartType }">
                     <span class="suggestion-icon">{{ suggestion.icon }}</span>
                     <span>{{ suggestion.name }}</span>
+                </div>
+                <div v-if="chartSuggestions.pivot" class="suggestion-button" @click="setChartType('pivot')" :class="{ 'active-suggestion': activeChartType === 'pivot' }">
+                    <span class="suggestion-icon">🧮</span>
+                    <span>Pivot Table</span>
                 </div>
             </div>
         </div>
 
         <div v-if="isAnalyticsPanelVisible" class="analytics-panel card">
             <h3>Analytics</h3>
-            
+
             <div class="settings-item" style="margin-bottom: 1rem;">
                 <span>Forecast Model</span>
                 <select class="settings-dropdown" v-model="activeWorksheet.analytics.model">
@@ -295,6 +352,7 @@
                     <span class="switch-slider"></span>
                 </label>
             </div>
+
             <div v-if="activeWorksheet.analytics.showTrendLine" class="settings-item" style="margin-top: 1rem;">
                 <span>Forecast Periods</span>
                 <input type="number" class="topn-input" min="0" v-model.number="activeWorksheet.analytics.forecastPeriods">
@@ -308,12 +366,14 @@
                     <button :class="{ active: activeFilter.mode === 'list' }" @click="activeFilter.mode = 'list'">List</button>
                     <button :class="{ active: activeFilter.mode === 'topN' }" @click="activeFilter.mode = 'topN'">Top N</button>
                 </div>
+
                 <div v-if="activeFilter.mode === 'list'" class="values-list">
                     <div v-for="value in activeFilter.uniqueValues" :key="value" class="checkbox-item">
                         <input type="checkbox" :id="value" :value="value" v-model="activeFilter.values">
                         <label :for="value">{{ value }}</label>
                     </div>
                 </div>
+
                 <div v-if="activeFilter.mode === 'topN'" class="topn-controls">
                     <span>Show Top</span>
                     <input type="number" v-model.number="activeFilter.n" min="1" class="topn-input">
@@ -324,7 +384,8 @@
                         </option>
                     </select>
                 </div>
-            </div>
+
+        </div>
             <div v-else-if="activeFilter.filter_type === 'range'">
                 <div class="range-inputs">
                     <label>Min: <input type="number" v-model.number="activeFilter.values.min"></label>
@@ -468,9 +529,112 @@
         </div>
     </div>
 
-    <div v-if="modals.settings" class="modal-overlay" @click.self="modals.settings = false">
+    <div v-if="modals.fieldSelector" class="modal-overlay">
         <div class="modal-content">
-            <h2>Settings</h2>
+            <h2>Load Data Options</h2>
+            <p>Choose how to load the fields from your file: <strong>{{ dataState.file?.name }}</strong></p>
+    
+            <div class="load-options">
+                <label class="radio-option">
+                    <input type="radio" name="load-option" value="all" v-model="fieldSelection.mode">
+                    <span>Load all fields</span>
+                </label>
+                <label class="radio-option">
+                    <input type="radio" name="load-option" value="select" v-model="fieldSelection.mode">
+                    <span>Select specific fields</span>
+                </label>
+            </div>
+    
+            <div v-if="fieldSelection.mode === 'select'" class="field-selection-container">
+                <h4>Dimensions</h4>
+                <div class="values-list">
+                    <div v-for="field in fieldSelection.availableDimensions" :key="field" class="checkbox-item">
+                        <input type="checkbox" :id="`select-${field}`" :value="field" v-model="fieldSelection.selectedFields">
+                        <label :for="`select-${field}`">{{ field }}</label>
+                    </div>
+                </div>
+                <h4>Measures</h4>
+                <div class="values-list">
+                    <div v-for="field in fieldSelection.availableMeasures" :key="field" class="checkbox-item">
+                        <input type="checkbox" :id="`select-${field}`" :value="field" v-model="fieldSelection.selectedFields">
+                        <label :for="`select-${field}`">{{ field }}</label>
+                    </div>
+                </div>
+            </div>
+    
+            <div class="modal-actions">
+                <button class="action-button secondary" @click="cancelDataLoad">Cancel</button>
+                <button class="action-button" @click="finalizeDataLoad" :disabled="fieldSelection.mode === 'select' && fieldSelection.selectedFields.length === 0">Load Data</button>
+            </div>
+        </div>
+    </div>
+
+    <div v-if="modals.database" class="modal-overlay" @click.self="modals.database = false">
+        <div class="modal-content">
+            <h2>Connect to Database</h2>
+            <div class="db-connection-form">
+                <div class="full-width">
+                    <label for="db-type">Database Type</label>
+                    <select id="db-type" v-model="dbState.db_type">
+                        <option value="postgresql">PostgreSQL</option>
+                        <option value="mysql">MySQL</option>
+                        <option value="sqlserver">SQL Server</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="db-host">Host</label>
+                    <input type="text" id="db-host" v-model="dbState.host">
+                </div>
+                <div>
+                    <label for="db-port">Port</label>
+                    <input type="number" id="db-port" v-model.number="dbState.port">
+                </div>
+                <div>
+                    <label for="db-user">User</label>
+                    <input type="text" id="db-user" v-model="dbState.user">
+                </div>
+                <div>
+                    <label for="db-password">Password</label>
+                    <input type="password" id="db-password" v-model="dbState.password">
+                </div>
+                <div class="full-width">
+                    <label for="db-name">Database Name</label>
+                    <input type="text" id="db-name" v-model="dbState.dbname">
+                </div>
+            </div>
+            
+            <div class="modal-actions">
+                <button class="action-button secondary" @click="modals.database = false">Cancel</button>
+                <button class="action-button" @click="testDBConnection" :disabled="dbState.isLoading">
+                    {{ dbState.isLoading ? 'Connecting...' : 'Connect' }}
+                </button>
+            </div>
+    
+            <div v-if="dbState.connectionStatus" :class="['connection-status', dbState.connectionStatus]">
+                {{ dbState.connectionMessage }}
+            </div>
+    
+            <div v-if="dbState.tables.length > 0">
+                <h3 style="margin-top: 2rem;">Select a Table to Load</h3>
+                <div class="values-list" style="max-height: 150px;">
+                    <div v-for="table in dbState.tables" :key="table" class="radio-option">
+                         <input type="radio" :id="`table-${table}`" :value="table" v-model="dbState.selectedTable">
+                         <label :for="`table-${table}`">{{ table }}</label>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button class="action-button" @click="loadTableData" :disabled="!dbState.selectedTable || dbState.isLoading">
+                        {{ dbState.isLoading ? 'Loading...' : 'Load Table' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <Transition name="fade">
+        <div v-if="modals.settings" class="modal-overlay" @click.self="modals.settings = false">
+            <div class="modal-content">
+                <h2>Settings</h2>
             <div class="settings-item">
                 <span>Dark Mode</span>
                 <label class="theme-switch">
@@ -492,6 +656,17 @@
                         {{ label }}
                     </option>
                 </select>
+            </div>
+            <div class="settings-item" style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color);">
+                <span>Y-Axis Scaling</span>
+                <select class="settings-dropdown" v-model="settings.yAxisMode">
+                    <option value="auto">Automatic</option>
+                    <option value="fixed">Fixed</option>
+                </select>
+            </div>
+            <div v-if="settings.yAxisMode === 'fixed'" class="settings-item" style="margin-top: 1rem; gap: 1rem;">
+                <input type="number" class="topn-input" v-model.number="settings.yAxisMin" placeholder="Min">
+                <input type="number" class="topn-input" v-model.number="settings.yAxisMax" placeholder="Max">
             </div>
             <div class="settings-item palette-setting">
                 <span>Chart Color Palette</span>
@@ -515,6 +690,7 @@
             </div>
         </div>
     </div>
+    </Transition>
 
     <div v-if="modals.calculatedField" class="modal-overlay" @click.self="modals.calculatedField = false">
         <div class="modal-content">
