@@ -676,7 +676,7 @@
                         <label :for="name">
                             <span class="palette-name">{{ name }}</span>
                             <div class="palette-preview">
-                                <span v-for="color in colors" :style="{ backgroundColor: color }"></span>
+                                <span v-for="color in colors[settings.theme]" :style="{ backgroundColor: color }"></span>
                             </div>
                         </label>
                     </div>
