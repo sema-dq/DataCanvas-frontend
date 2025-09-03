@@ -109,12 +109,42 @@ const app = createApp({
         const history = reactive([]);
         const historyIndex = ref(-1);
 
+
         const palettes = {
-            default: ['#40a9ff', '#1890ff', '#096dd9', '#0050b3', '#003a8c', '#13c2c2', '#08979c', '#006d75', '#00474f'],
-            sunset: ['#f94144', '#f3722c', '#f8961e', '#f9c74f', '#43aa8b', '#577590', '#277da1'],
-            forest: ['#1b4332', '#2d6a4f', '#40916c', '#52b788', '74c69d', '#95d5b2', '#b7e4c7'],
-            colorblindFriendly: ['#332288', '#88CCEE', '#44AA99', '#117733', '#999933', '#DDCC77', '#CC6677', '#882255', '#AA4499']
+            default: {
+                light: ['#0d47a1', '#1565c0', '#1976d2', '#1e88e5', '#2196f3', '#42a5f5', '#64b5f6', '#90caf9', '#0097a7', '#00acc1', '#26c6da', '#4dd0e1', '#80deea', '#b2ebf2'],
+                dark: ['#b2ebf2', '#80deea', '#4dd0e1', '#26c6da', '#00acc1', '#0097a7', '#0d47a1', '#1565c0', '#1976d2', '#1e88e5', '#2196f3', '#42a5f5', '#64b5f6', '#90caf9']
+            },
+            sunset: {
+                light: ['#fbe9e7', '#ffccbc', '#ffab91', '#ff8a65', '#ff7043', '#ff5722', '#f4511e', '#e64a19', '#d84315', '#bf360c'],
+                dark: ['#ff5722', '#f4511e', '#e64a19', '#d84315', '#bf360c', '#fbe9e7', '#ffccbc', '#ffab91', '#ff8a65', '#ff7043']
+            },
+            forest: {
+                light: ['#1b5e20', '#2e7d32', '#388e3c', '#43a047', '#4caf50', '#66bb6a', '#81c784', '#a5d6a7', '#c8e6c9', '#e8f5e9'],
+                dark: ['#e8f5e9', '#c8e6c9', '#a5d6a7', '#81c784', '#66bb6a', '#4caf50', '#43a047', '#388e3c', '#2e7d32', '#1b5e20']
+            },
+            ocean: {
+                light: ['#01579b', '#0277bd', '#0288d1', '#039be5', '#03a9f4', '#29b6f6', '#4fc3f7', '#81d4fa', '#b3e5fc', '#e1f5fe'],
+                dark: ['#e1f5fe', '#b3e5fc', '#81d4fa', '#4fc3f7', '#29b6f6', '#03a9f4', '#039be5', '#0288d1', '#0277bd', '#01579b']
+            },
+            vintage: {
+                light: ['#3e2723', '#4e342e', '#5d4037', '#6d4c41', '#795548', '#8d6e63', '#a1887f', '#bcaaa4', '#d7ccc8', '#efebe9'],
+                dark: ['#efebe9', '#d7ccc8', '#bcaaa4', '#a1887f', '#8d6e63', '#795548', '#6d4c41', '#5d4037', '#4e342e', '#3e2723']
+            },
+            berry: {
+                light: ['#4a148c', '#6a1b9a', '#7b1fa2', '#8e24aa', '#9c27b0', '#ab47bc', '#ba68c8', '#ce93d8', '#e1bee7', '#f3e5f5'],
+                dark: ['#f3e5f5', '#e1bee7', '#ce93d8', '#ba68c8', '#ab47bc', '#9c27b0', '#8e24aa', '#7b1fa2', '#6a1b9a', '#4a148c']
+            },
+            vivid: {
+                light: ['#d50000', '#f57c00', '#ffea00', '#00c853', '#00b0ff', '#2962ff', '#6200ea', '#aa00ff'],
+                dark: ['#ff1744', '#ff9100', '#ffff00', '#00e676', '#00e5ff', '#2979ff', '#651fff', '#d500f9']
+            },
+            colorblindFriendly: {
+                light: ['#332288', '#88CCEE', '#44AA99', '#117733', '#999933', '#DDCC77', '#CC6677', '#882255', '#AA4499'],
+                dark: ['#332288', '#88CCEE', '#44AA99', '#117733', '#999933', '#DDCC77', '#CC6677', '#882255', '#AA4499']
+            }
         };
+
         const numberFormats = {
             default: 'Default (1,234.5)', usd: 'USD ($1,234.50)', eur: 'EUR (€1,234.50)',
             gbp: 'GBP (£1,234.50)', jpy: 'JPY (¥1,234)', percent: 'Percent (12.3%)'
@@ -205,7 +235,7 @@ const app = createApp({
             const uniqueSuggestions = Array.from(new Map(standard.map(item => [item.type, item])).values());
             return { standard: uniqueSuggestions, pivot };
         });
-        
+
         const canRunAnalysis = computed(() => {
             switch (analysisState.testType) {
                 case 'correlation':
@@ -346,8 +376,6 @@ const app = createApp({
             requestVisualizationUpdate();
         };
 
-        // script.js
-
         const generateChartOption = (chartData, payload) => {
             const chartType = payload.chart_type;
             const sortField = [...(activeWorksheet.value?.shelves.columns || []), ...(activeWorksheet.value?.shelves.rows || [])].find(f => f.sort);
@@ -391,7 +419,7 @@ const app = createApp({
                 }];
             
             const option = { 
-                color: palettes[settings.activePalette], 
+                color: palettes[settings.activePalette][settings.theme],                
                 tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: _createTooltipFormatter }, 
                 legend: { data: legendData }, 
                 xAxis: { type: 'category', data: categories }, 
@@ -450,10 +478,10 @@ const app = createApp({
         const _getComboOption = (chartData, payload) => {
             const { x_axis, y_axes } = payload;
             if (!y_axes[0] || !y_axes[1]) return {};
-            return { color: palettes[settings.activePalette], tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: _createTooltipFormatter }, legend: { data: y_axes }, xAxis: [{ type: 'category', data: [...new Set(chartData.map(d => d[x_axis]))], axisPointer: { type: 'shadow' } }], yAxis: [{ type: 'value', name: y_axes[0], axisLabel: { formatter: formatNumber } }, { type: 'value', name: y_axes[1], position: 'right', axisLabel: { formatter: formatNumber } }], series: [{ name: y_axes[0], type: 'bar', yAxisIndex: 0, data: chartData.map(d => d[y_axes[0]] || 0), label: { show: settings.showDataLabels, position: 'top', formatter: p => formatNumber(p.value) } }, { name: y_axes[1], type: 'line', yAxisIndex: 1, data: chartData.map(d => d[y_axes[1]] || 0), label: { show: settings.showDataLabels, position: 'top', formatter: p => formatNumber(p.value) } }], grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true } };
+            return { color: palettes[settings.activePalette][settings.theme], tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, formatter: _createTooltipFormatter }, legend: { data: y_axes }, xAxis: [{ type: 'category', data: [...new Set(chartData.map(d => d[x_axis]))], axisPointer: { type: 'shadow' } }], yAxis: [{ type: 'value', name: y_axes[0], axisLabel: { formatter: formatNumber } }, { type: 'value', name: y_axes[1], position: 'right', axisLabel: { formatter: formatNumber } }], series: [{ name: y_axes[0], type: 'bar', yAxisIndex: 0, data: chartData.map(d => d[y_axes[0]] || 0), label: { show: settings.showDataLabels, position: 'top', formatter: p => formatNumber(p.value) } }, { name: y_axes[1], type: 'line', yAxisIndex: 1, data: chartData.map(d => d[y_axes[1]] || 0), label: { show: settings.showDataLabels, position: 'top', formatter: p => formatNumber(p.value) } }], grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true } };
         };
-        const _getPieOption = (chartData, payload) => ({ color: palettes[settings.activePalette], tooltip: { trigger: 'item', formatter: p => `${p.name}: ${formatNumber(p.value)} (${p.percent}%)` }, series: [{ name: payload.y_axes[0], type: 'pie', radius: '60%', data: chartData.map(d => ({ value: d[payload.y_axes[0]], name: d[payload.x_axis] })), emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.5)' } } }] });
-        const _getTreemapOption = (chartData, payload) => ({ color: palettes[settings.activePalette], tooltip: { formatter: p => `${p.name}: ${formatNumber(p.value)}` }, series: [{ type: 'treemap', data: chartData.map(d => ({ name: d[payload.x_axis], value: d[payload.y_axes[0]] })) }] });
+        const _getPieOption = (chartData, payload) => ({ color: palettes[settings.activePalette][settings.theme], tooltip: { trigger: 'item', formatter: p => `${p.name}: ${formatNumber(p.value)} (${p.percent}%)` }, series: [{ name: payload.y_axes[0], type: 'pie', radius: '60%', data: chartData.map(d => ({ value: d[payload.y_axes[0]], name: d[payload.x_axis] })), emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0,0,0,0.5)' } } }] });
+        const _getTreemapOption = (chartData, payload) => ({ color: palettes[settings.activePalette][settings.theme], tooltip: { formatter: p => `${p.name}: ${formatNumber(p.value)}` }, series: [{ type: 'treemap', data: chartData.map(d => ({ name: d[payload.x_axis], value: d[payload.y_axes[0]] })) }] });
         const _getHeatmapOption = (chartData, payload) => {
             const { heatmap_x, heatmap_y, heatmap_value } = payload;
             if (!heatmap_x || !heatmap_y || !heatmap_value) return {};
@@ -464,7 +492,7 @@ const app = createApp({
         };
         const _getScatterOption = (chartData, payload) => {
             const option = {
-                color: palettes[settings.activePalette],
+                color: palettes[settings.activePalette][settings.theme],
                 tooltip: {
                     trigger: 'item',
                     formatter: p => `${payload.x_axis}: ${formatNumber(p.value[0])}<br/>${payload.y_axes[0]}: ${formatNumber(p.value[1])}`
@@ -502,7 +530,7 @@ const app = createApp({
         const _getBoxPlotOption = (chartData, payload) => {
             const { categories, boxplotData } = chartData;
             const option = {
-                color: palettes[settings.activePalette],
+                color: palettes[settings.activePalette][settings.theme],
                 tooltip: {
                     trigger: 'item',
                     axisPointer: { type: 'shadow' }
