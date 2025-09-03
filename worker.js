@@ -267,6 +267,47 @@ const processDataForChart = (data) => {
         );
     }
 
+    if (payload.chart_type === 'pivot') {
+        const rowFields = config.shelves.pivotRows.map(f => getFieldName(f));
+        const colField = getFieldName(config.shelves.pivotColumns[0]);
+        const valueField = getFieldName(config.shelves.pivotValues[0]);
+        const aggFunc = config.shelves.pivotValues[0]?.aggregation || 'SUM';
+    
+        if (!rowFields.length || !colField || !valueField) {
+            return { chartData: { headers: [], rows: [] }, payload };
+        }
+    
+        const colHeaders = [...new Set(processedRecords.map(r => r[colField]))].sort();
+        const finalHeaders = [...rowFields, ...colHeaders];
+    
+        const groupedData = new Map();
+        processedRecords.forEach(record => {
+            const rowKey = rowFields.map(field => record[field]).join('||');
+            if (!groupedData.has(rowKey)) {
+                groupedData.set(rowKey, []);
+            }
+            groupedData.get(rowKey).push(record);
+        });
+    
+        const finalRows = [];
+        groupedData.forEach((groupRecords, rowKey) => {
+            const rowValues = rowKey.split('||');
+            const newRow = [...rowValues];
+    
+            colHeaders.forEach(colHeader => {
+                const valuesToAgg = groupRecords
+                    .filter(r => r[colField] === colHeader)
+                    .map(r => r[valueField]);
+                
+                const aggregatedValue = aggregate(aggFunc.toUpperCase(), valuesToAgg);
+                newRow.push(aggregatedValue);
+            });
+            finalRows.push(newRow);
+        });
+    
+        return { chartData: { headers: finalHeaders, rows: finalRows }, payload };
+    }
+
     if (payload.chart_type === 'wordCloud') {
         const textField = getFieldName(allFieldsOnShelves.find(f => f.type === 'dimension'));
         if (!textField) {
